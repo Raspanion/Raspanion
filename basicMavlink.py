@@ -1,3 +1,5 @@
+# Ensure that dtoverlay=uart4 in /boot/config.txt
+
 import time
 import math
 from pymavlink import mavutil
