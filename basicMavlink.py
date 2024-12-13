@@ -263,18 +263,17 @@ def periodic_print(period):
         time_to_print = time.time() + period
         if stale_data_warning:
             print("Warning: Stale Data Detected!")
-        else:
-            if last.heartbeat:
-                armed = "Armed" if last.heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED else "Disarmed"
-                print(f"Armed Status: {armed}")
-                print(f"Flight Mode: {get_flight_mode_name(last.heartbeat.custom_mode)}")
-            if last.system:
-                print(f"Battery Voltage: {last.system.voltage_battery / 1000.0:.2f} V")
-            if last.attitude:
-                print(f"Roll Angle: {math.degrees(last.attitude.roll):.2f}°")
-            if last.position:
-                print(f"Altitude: {last.position.relative_alt / 1000.0:.2f} m")
-            print(f"Heading to Home: {home_heading:.2f}°")
+        if last.heartbeat:
+            armed = "Armed" if last.heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED else "Disarmed"
+            print(f"Armed Status: {armed}")
+            print(f"Flight Mode: {get_flight_mode_name(last.heartbeat.custom_mode)}")
+        if last.system:
+            print(f"Battery Voltage: {last.system.voltage_battery / 1000.0:.2f} V")
+        if last.attitude:
+            print(f"Roll Angle: {math.degrees(last.attitude.roll):.2f}°")
+        if last.position:
+            print(f"Altitude: {last.position.relative_alt / 1000.0:.2f} m")
+        print(f"Heading to Home: {home_heading:.2f}°")
         print("-----------------------")
 
 
