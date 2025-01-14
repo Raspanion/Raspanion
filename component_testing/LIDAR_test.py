@@ -3,7 +3,7 @@ import time
 
 # Adjust the serial port if necessary; this is typically correct for UART0 and UART3 once enabled.
 SERIAL_PORT = "/dev/ttyAMA0" # UART0
-# SERIAL_PORT = "/dev/ttyAMA1" # UART3
+# SERIAL_PORT = "/dev/ttyAMA3" # UART3
 BAUDRATE = 115200
 
 def read_tfmini_frame(ser):

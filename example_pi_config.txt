@@ -1,48 +1,75 @@
 
-# For more options and information see:
-# http://rpf.io/configtxt
+# For more options and information see
+# http://rptl.io/configtxt
+# Some settings may impact device functionality. See link above for details
 
+# Uncomment some or all of these to enable the optional hardware interfaces
+#dtparam=i2c_arm=on
+#dtparam=i2s=on
+#dtparam=spi=on
+
+# Enable audio (loads snd_bcm2835)
+dtparam=audio=on
+
+# Additional overlays and parameters are documented
+# /boot/firmware/overlays/README
+
+# Automatically load overlays for detected cameras
+camera_auto_detect=1
+
+# Automatically load overlays for detected DSI displays
+display_auto_detect=1
+
+# Automatically load initramfs files, if found
+auto_initramfs=1
+
+# Enable DRM VC4 V3D driver
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+
+# Don't have the firmware create an initial video= setting in cmdline.txt.
+# Use the kernel's default instead.
+disable_fw_kms_setup=1
+
+# Run in 64-bit mode
+arm_64bit=1
+
+# Disable compensation for displays with overscan
+disable_overscan=1
+
+# Run as fast as firmware / board allows
+arm_boost=1
+
+[cm4]
+# Enable host mode on the 2711 built-in XHCI USB controller.
+# This line should be removed if the legacy DWC2 controller is required
+# (e.g. for USB device mode) or if USB support is not required.
+otg_mode=1
+
+[cm5]
+dtoverlay=dwc2,dr_mode=host
+
+[all]
 # Enable composite video output (TV out)
 enable_tvout=1
 sdtv_mode=2       # Set to PAL mode (Europe and others)
 sdtv_aspect=3     # Set 16:9 aspect ratio for composite video
-
-# Set GPU memory allocation (128 MB for better graphics support)
-gpu_mem=128
 
 # Enable I2C interfaces for additional peripherals
 dtparam=i2c_arm=on
 dtoverlay=i2c4,pins_6_7   # I2C on GPIO pins 6 and 7
 dtoverlay=i2c5,pins_10_11 # I2C on GPIO pins 10 and 11
 
-# Enable audio
-dtparam=audio=on
-
-# Automatically load overlays for detected cameras
-camera_auto_detect=1
-display_auto_detect=1
-
-# Disable compensation for displays with overscan
-disable_overscan=1
-
 # Set up overlays for ArduCam and IMX519 camera modules
 dtoverlay=arducam-pivariety
 dtoverlay=imx519
 dtoverlay=imx519,cam0
 
-# Set up serial port(s)
+# Set up serial port(s). Bluetooth uses uart0.
 enable_uart=1
+dtoverlay=disable-bt
 dtoverlay=uart0
 dtoverlay=uart3
 dtoverlay=uart4
 
-# Enable DRM (Direct Rendering Manager) for graphics acceleration
-dtoverlay=vc4-fkms-v3d  # Use FKMS for compatibility with composite output
-
-# Specific settings for Compute Module 4
-[cm4]
-otg_mode=1  # Enable USB OTG mode on the CM4's built-in XHCI USB controller
-
-# Specific settings for Pi 4
-[pi4]
-arm_boost=1  # Enable max CPU speed for Pi 4
+dtparam=pciex1_gen=3
