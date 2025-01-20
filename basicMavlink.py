@@ -33,7 +33,7 @@ from pymavlink import mavutil
 NUM_MSGS = 7  # Number of MAVLink messages to track
 INTERVAL_US = 10000  # Message interval in microseconds (10 milliseconds)
 IGNORE = 65535  # MAVLink ignore value for RC channels
-SERIAL_PORT = '/dev/ttyAMA2'  # UART port (e.g., UART4 on Raspberry Pi)
+SERIAL_PORT = '/dev/ttyAMA4'  # UART port (e.g., UART4 on Raspberry Pi)
 BAUDRATE = 460800  # Serial communication baud rate
 
 # MAVLink message IDs to request
