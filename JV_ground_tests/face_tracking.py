@@ -28,6 +28,7 @@ def set_servo_pulsewidth(pulse_width):
 cmd = [
     "rpicam-hello",
     "-t", "0",
+    "-f",
     "--width", "640",
     "--height", "480",
     "--framerate", "15",
