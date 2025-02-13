@@ -414,8 +414,7 @@ int main(int argc, char** argv)
     std::string hef_file = getCmdOption(argc, argv, "--net", "-n");
     if (hef_file.empty())
     {
-        std::cerr << "Usage: " << argv[0] << " --net=<model.hef>\n";
-        return 1;
+        hef_file = "../../compiled_Hailo_models/scdepthv3.hef";
     }
     const char *lidar_port = "/dev/ttyAMA0";
     int lidar_fd = open_lidar_port(lidar_port);
