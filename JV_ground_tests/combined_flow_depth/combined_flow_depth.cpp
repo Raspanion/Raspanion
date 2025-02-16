@@ -21,7 +21,7 @@
 #include <algorithm>
 
 //------------------------------
-// Command-line option parser
+// Command‑line option parser
 //------------------------------
 static std::string getCmdOption(int argc, char *argv[],
                                 const std::string &longOpt,
@@ -185,23 +185,23 @@ void lidarThreadFunc(int fd)
 //-------------------------------------------------------------
 // Gyro Thread
 //-------------------------------------------------------------
-// Mapping convention (swapped):
-//   - rawPitch is from original raw X,
-//   - rawRoll is from original raw Y,
-//   - rawYaw is from original raw Z.
-//
-// We filter these values using an exponential low-pass filter.
+// Gyro configuration constants (from the Python example):
 const int ICM42688_ADDR = 0x69;
-const unsigned char WHO_AM_I_ICM = 0x75;
-const unsigned char PWR_MGMT_0   = 0x4E;
+const unsigned char PWR_MGMT0   = 0x4E;
 const unsigned char GYRO_CONFIG0 = 0x4F;
-const unsigned char GYRO_DATA_X0 = 0x25;
+const unsigned char GYRO_Y_HIGH  = 0x25; // Gyro: high byte for X (see mapping)
+const unsigned char GYRO_Y_LOW   = 0x26; // Gyro: low byte for X
+const unsigned char GYRO_X_HIGH  = 0x27; // Gyro: high byte for Y
+const unsigned char GYRO_X_LOW   = 0x28; // Gyro: low byte for Y
+const unsigned char GYRO_Z_HIGH  = 0x29; // Gyro: high byte for Z (yaw)
+const unsigned char GYRO_Z_LOW   = 0x2A; // Gyro: low byte for Z
 
 std::mutex gyroMutex;
-double filteredRoll = 0.0;    // Derived from rawRoll (original raw Y)
-double filteredPitch = 0.0;   // Derived from rawPitch (original raw X)
-double filteredYaw = 0.0;     // Derived from rawYaw (original raw Z)
-std::atomic<int> rawGyroPitch{0}, rawGyroRoll{0}, rawGyroYaw{0};
+
+double rollRate = 0.0;
+double pitchRate = 0.0;
+double yawRate = 0.0;
+
 std::atomic<bool> g_gyro_running{true};
 
 void gyroThreadFunc()
@@ -217,23 +217,25 @@ void gyroThreadFunc()
         close(fd);
         return;
     }
-    // Initialize gyro
+    // Configure gyro:
     unsigned char config[2];
-    config[0] = PWR_MGMT_0;
-    config[1] = 0x0F;
+    config[0] = PWR_MGMT0;
+    config[1] = 0x0F; // Power on gyro and accel in low-noise mode
     if (write(fd, config, 2) != 2)
-        std::cerr << "[Gyro Thread] Failed to write PWR_MGMT_0" << std::endl;
+        std::cerr << "[Gyro Thread] Failed to write PWR_MGMT0" << std::endl;
     config[0] = GYRO_CONFIG0;
-    config[1] = 0x00;
+    config[1] = 0x06; // Set gyroscope ODR to 1kHz and full‑scale range to ±2000 dps
     if (write(fd, config, 2) != 2)
         std::cerr << "[Gyro Thread] Failed to write GYRO_CONFIG0" << std::endl;
-    usleep(50000);
+    usleep(100000); // Wait 100ms for configuration
 
-    const double GYRO_RAW_TO_DPS = 0.0001;
+    // Conversion factor changed to 250/32768.0:
+    const double GYRO_RAW_TO_DPS = 250.0 / 32768.0;
     const double DPS_TO_RAD = M_PI / 180.0;
-    const double alpha = 0.1;
+    // const double alpha = 0.1;
     while (g_gyro_running.load()) {
-        unsigned char reg = GYRO_DATA_X0;
+        // Read 6 bytes starting at register 0x25.
+        unsigned char reg = GYRO_Y_HIGH;
         if (write(fd, &reg, 1) != 1) {
             std::cerr << "[Gyro Thread] Failed to set register for gyro read." << std::endl;
             break;
@@ -243,26 +245,18 @@ void gyroThreadFunc()
             usleep(5000);
             continue;
         }
-        // Swapped mapping: 
-        //   rawPitch from original raw X,
-        //   rawRoll from original raw Y,
-        //   rawYaw from original raw Z.
-        int16_t rawPitchVal = (data[1] << 8) | data[0];
-        int16_t rawRollVal  = (data[3] << 8) | data[2];
-        int16_t rawYawVal   = (data[5] << 8) | data[4];
+        // Use the correct mapping:
+        int16_t rawGyroY = (data[0] << 8) | data[1];
+        int16_t rawGyroX = (data[2] << 8) | data[3];
+        int16_t rawGyroZ = (data[4] << 8) | data[5];
+        if(rawGyroX & 0x8000) rawGyroX -= 65536;
+        if(rawGyroY & 0x8000) rawGyroY -= 65536;
+        if(rawGyroZ & 0x8000) rawGyroZ -= 65536;
+        // Apply sign inversion (as in the Python example).
+        rollRate = -rawGyroX * GYRO_RAW_TO_DPS * DPS_TO_RAD;
+        pitchRate = -rawGyroY * GYRO_RAW_TO_DPS * DPS_TO_RAD;
+        yawRate = rawGyroZ * GYRO_RAW_TO_DPS * DPS_TO_RAD;
 
-        {
-            std::lock_guard<std::mutex> lock(gyroMutex);
-            rawGyroPitch.store(rawPitchVal);
-            rawGyroRoll.store(rawRollVal);
-            rawGyroYaw.store(rawYawVal);
-            double newPitch = rawPitchVal * GYRO_RAW_TO_DPS * DPS_TO_RAD;
-            double newRoll  = - rawRollVal * GYRO_RAW_TO_DPS * DPS_TO_RAD;
-            double newYaw   = rawYawVal * GYRO_RAW_TO_DPS * DPS_TO_RAD;
-            filteredPitch = (1 - alpha) * filteredPitch + alpha * newPitch;
-            filteredRoll  = (1 - alpha) * filteredRoll  + alpha * newRoll;
-            filteredYaw   = (1 - alpha) * filteredYaw   + alpha * newYaw;
-        }
         usleep(5000);
     }
     close(fd);
@@ -562,31 +556,25 @@ int main(int argc, char** argv)
         double sumWeightedDiv = cv::sum(weightedDiv)[0];
         double Vx = - (sumWeightedDiv / area) / 2.0;
 
-        // --- Compute Predicted Rotational Flow from Gyro ---
-        // To isolate pitch data in the blue arrows, set filteredRoll and filteredYaw to zero.
+
         {
-            std::lock_guard<std::mutex> lock(gyroMutex);
-            // For clarity, create local variables.
-            // double isolatedRoll  = 0.0;
-            // double isolatedYaw   = 0.0;
-            double isolatedPitch = filteredPitch;  // Keep pitch as is.
-            predictedFlow = cv::Mat(flow.size(), flow.type(), cv::Scalar(0,0));
-            // Here we use a simple model: 
-            // For pitch-only rotation, we assume a uniform vertical flow:
+            std::lock_guard<std::mutex> lock(gyroMutex); 
+            predictedFlow = cv::Mat(flow.size(), flow.type(), cv::Scalar(0, 0));
+            int cx_flow = flow.cols / 2;
+            int cy_flow = flow.rows / 2;
             for (int y = 0; y < flow.rows; y += step) {
                 for (int x = 0; x < flow.cols; x += step) {
-                    // With only pitch, no horizontal (u) flow.
-                    float pred_u = 0.0f;
-                    // Vertical (v) flow is proportional to the pitch:
-                    float pred_v = static_cast<float>( - f_small * isolatedPitch );
-                    predictedFlow.at<cv::Point2f>(y, x) = cv::Point2f(pred_u, pred_v);
+                    double u_pred = f_small * yawRate + rollRate * (y - cy_flow);
+                    double v_pred = f_small * pitchRate + rollRate * (cx_flow - x);
+                    predictedFlow.at<cv::Point2f>(y, x) = cv::Point2f(static_cast<float>(u_pred),
+                                                                      static_cast<float>(v_pred));
                 }
             }
         }
 
         // --- Create Overlay Image ---
         cv::Mat overlay = depthColor.clone();
-        // First, draw predicted (blue) arrows.
+        // Draw predicted (blue) arrows.
         for (int y = 0; y < flow.rows; y += step) {
             for (int x = 0; x < flow.cols; x += step) {
                 cv::Point pt1(x * 2, y * 2);
@@ -595,7 +583,7 @@ int main(int argc, char** argv)
                 cv::arrowedLine(overlay, pt1, pt2, cv::Scalar(255, 0, 0), 3);
             }
         }
-        // Then, draw measured (green) optical flow arrows on top.
+        // Draw measured (green) optical flow arrows.
         for (int y = 0; y < flow.rows; y += step) {
             for (int x = 0; x < flow.cols; x += step) {
                 cv::Point pt1(x * 2, y * 2);
@@ -646,6 +634,9 @@ int main(int argc, char** argv)
     std::cout << "[Main] Done.\n";
     return 0;
 }
+
+
+
 
 
 
