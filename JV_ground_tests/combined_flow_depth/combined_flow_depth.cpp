@@ -185,19 +185,22 @@ void lidarThreadFunc(int fd)
 //-------------------------------------------------------------
 // Gyro Thread
 //-------------------------------------------------------------
-// Gyro configuration constants (from the Python example):
+// Gyro configuration constants:
 const int ICM42688_ADDR = 0x69;
 const unsigned char PWR_MGMT0   = 0x4E;
 const unsigned char GYRO_CONFIG0 = 0x4F;
-const unsigned char GYRO_Y_HIGH  = 0x25; // Gyro: high byte for X (see mapping)
-const unsigned char GYRO_Y_LOW   = 0x26; // Gyro: low byte for X
-const unsigned char GYRO_X_HIGH  = 0x27; // Gyro: high byte for Y
-const unsigned char GYRO_X_LOW   = 0x28; // Gyro: low byte for Y
-const unsigned char GYRO_Z_HIGH  = 0x29; // Gyro: high byte for Z (yaw)
-const unsigned char GYRO_Z_LOW   = 0x2A; // Gyro: low byte for Z
+const unsigned char GYRO_Y_HIGH  = 0x25; // High byte for X-axis
+const unsigned char GYRO_Y_LOW   = 0x26; // Low byte for X-axis
+const unsigned char GYRO_X_HIGH  = 0x27; // High byte for Y-axis
+const unsigned char GYRO_X_LOW   = 0x28; // Low byte for Y-axis
+const unsigned char GYRO_Z_HIGH  = 0x29; // High byte for Z-axis (yaw)
+const unsigned char GYRO_Z_LOW   = 0x2A; // Low byte for Z-axis
 
 std::mutex gyroMutex;
-
+// Our convention (in radians per second):
+//   rollRate  ← rotation about X (from gyro X)
+//   pitchRate ← rotation about Y (from gyro Y)
+//   yawRate   ← rotation about Z (from gyro Z)
 double rollRate = 0.0;
 double pitchRate = 0.0;
 double yawRate = 0.0;
@@ -224,15 +227,14 @@ void gyroThreadFunc()
     if (write(fd, config, 2) != 2)
         std::cerr << "[Gyro Thread] Failed to write PWR_MGMT0" << std::endl;
     config[0] = GYRO_CONFIG0;
-    config[1] = 0x06; // Set gyroscope ODR to 1kHz and full‑scale range to ±2000 dps
+    config[1] = 0x06; // Set gyro ODR to 1kHz and full‑scale range to ±2000 dps
     if (write(fd, config, 2) != 2)
         std::cerr << "[Gyro Thread] Failed to write GYRO_CONFIG0" << std::endl;
     usleep(100000); // Wait 100ms for configuration
 
-    // Conversion factor changed to 250/32768.0:
+    // Conversion factor: 250/32768.0 (dps per LSB)
     const double GYRO_RAW_TO_DPS = 250.0 / 32768.0;
     const double DPS_TO_RAD = M_PI / 180.0;
-    // const double alpha = 0.1;
     while (g_gyro_running.load()) {
         // Read 6 bytes starting at register 0x25.
         unsigned char reg = GYRO_Y_HIGH;
@@ -245,14 +247,13 @@ void gyroThreadFunc()
             usleep(5000);
             continue;
         }
-        // Use the correct mapping:
-        int16_t rawGyroY = (data[0] << 8) | data[1];
         int16_t rawGyroX = (data[2] << 8) | data[3];
+        int16_t rawGyroY = (data[0] << 8) | data[1];
         int16_t rawGyroZ = (data[4] << 8) | data[5];
-        if(rawGyroX & 0x8000) rawGyroX -= 65536;
-        if(rawGyroY & 0x8000) rawGyroY -= 65536;
-        if(rawGyroZ & 0x8000) rawGyroZ -= 65536;
-        // Apply sign inversion (as in the Python example).
+        if (rawGyroX & 0x8000) rawGyroX -= 65536;
+        if (rawGyroY & 0x8000) rawGyroY -= 65536;
+        if (rawGyroZ & 0x8000) rawGyroZ -= 65536;
+        // Apply sign inversion as in the Python example.
         rollRate = -rawGyroX * GYRO_RAW_TO_DPS * DPS_TO_RAD;
         pitchRate = -rawGyroY * GYRO_RAW_TO_DPS * DPS_TO_RAD;
         yawRate = rawGyroZ * GYRO_RAW_TO_DPS * DPS_TO_RAD;
@@ -450,6 +451,7 @@ int main(int argc, char** argv)
     cv::Mat smallPrevGray;
     cv::Mat predictedFlow;
 
+    // Note: The linear velocity filtering variables are declared inside the main loop.
     while (true) {
         cv::Mat frame;
         {
@@ -464,7 +466,7 @@ int main(int argc, char** argv)
         if (frame.cols != inWidth || frame.rows != inHeight)
             cv::resize(frame, frame, cv::Size(inWidth, inHeight));
 
-        // DepthNet Inference
+        // DepthNet Inference:
         hailo_status status = inputStream.write(
             hailort::MemoryView(frame.data, frame.total() * frame.elemSize()));
         if (status != HAILO_SUCCESS) {
@@ -502,16 +504,38 @@ int main(int argc, char** argv)
                                      0.5, 3, 15, 3, 5, 1.2, 0);
         smallPrevGray = smallGray.clone();
 
-        // LS Fit for angular rate estimation.
+        // Compute f_small once so it is available later.
+        double FOV_H = 140.0;
+        double f_small = (smallGray.cols / 2.0) / tan((FOV_H * CV_PI / 180.0) / 2.0);
+
+        // --- Compute Predicted Rotational Flow from Gyro (Blue arrows) ---
+        {
+            std::lock_guard<std::mutex> lock(gyroMutex);
+            predictedFlow = cv::Mat(flow.size(), flow.type(), cv::Scalar(0, 0));
+            int cx_flow = flow.cols / 2;
+            int cy_flow = flow.rows / 2;
+            for (int y = 0; y < flow.rows; y += 10) {
+                for (int x = 0; x < flow.cols; x += 10) {
+                    double u_pred = f_small * yawRate + rollRate * (y - cy_flow);
+                    double v_pred = f_small * pitchRate + rollRate * (cx_flow - x);
+                    predictedFlow.at<cv::Point2f>(y, x) =
+                        cv::Point2f(static_cast<float>(u_pred),
+                                    static_cast<float>(v_pred));
+                }
+            }
+        }
+
+        // --- Compute Corrected (Residual) Flow (Measured - Predicted) ---
+        cv::Mat correctedFlow = flow - predictedFlow;
+
+        // --- Compute Linear Velocities from Corrected Flow ---
         int step = 10;
         int cx_small = smallGray.cols / 2, cy_small = smallGray.rows / 2;
-        double FOV_H = 90.0;
-        double f_small = (smallGray.cols / 2.0) / tan((FOV_H * CV_PI / 180.0) / 2.0);
         std::vector<cv::Mat> A_rows;
         std::vector<double> b_vals;
-        for (int y = 0; y < flow.rows; y += step) {
-            for (int x = 0; x < flow.cols; x += step) {
-                cv::Point2f flowVec = flow.at<cv::Point2f>(y, x);
+        for (int y = 0; y < correctedFlow.rows; y += step) {
+            for (int x = 0; x < correctedFlow.cols; x += step) {
+                cv::Point2f flowVec = correctedFlow.at<cv::Point2f>(y, x);
                 double u_val = flowVec.x;
                 double v_val = flowVec.y;
                 double x_centered = x - cx_small;
@@ -535,15 +559,13 @@ int main(int argc, char** argv)
         cv::solve(A, b, omega, cv::DECOMP_SVD);
         double omega_x = omega.at<double>(0, 0);
         double omega_y = omega.at<double>(1, 0);
-        // double omega_z = omega.at<double>(2, 0);
-
         cv::Scalar sumDepth = cv::sum(calibDepth(roi));
         double area = roi.width * roi.height;
         double avgDepth = sumDepth[0] / area;
-        double Vz = omega_x * avgDepth;
-        double Vy = omega_y * avgDepth;
+        double Vz = omega_x * avgDepth;  // forward/backward velocity
+        double Vy = omega_y * avgDepth;  // lateral velocity
         cv::Mat flowChannels[2];
-        cv::split(flow, flowChannels);
+        cv::split(correctedFlow, flowChannels);
         cv::Mat du_dx, dv_dy;
         cv::Sobel(flowChannels[0], du_dx, CV_64F, 1, 0, 3);
         cv::Sobel(flowChannels[1], dv_dy, CV_64F, 0, 1, 3);
@@ -556,25 +578,29 @@ int main(int argc, char** argv)
         double sumWeightedDiv = cv::sum(weightedDiv)[0];
         double Vx = - (sumWeightedDiv / area) / 2.0;
 
-
+        // --- NEW: Reverse sign of Vx, convert from m/s to cm/s, and filter linear velocities.
         {
-            std::lock_guard<std::mutex> lock(gyroMutex); 
-            predictedFlow = cv::Mat(flow.size(), flow.type(), cv::Scalar(0, 0));
-            int cx_flow = flow.cols / 2;
-            int cy_flow = flow.rows / 2;
-            for (int y = 0; y < flow.rows; y += step) {
-                for (int x = 0; x < flow.cols; x += step) {
-                    double u_pred = f_small * yawRate + rollRate * (y - cy_flow);
-                    double v_pred = f_small * pitchRate + rollRate * (cx_flow - x);
-                    predictedFlow.at<cv::Point2f>(y, x) = cv::Point2f(static_cast<float>(u_pred),
-                                                                      static_cast<float>(v_pred));
-                }
-            }
+            static double filteredVx = 0.0, filteredVy = 0.0, filteredVz = 0.0;
+            static double Vx_scalar = 1.0, Vy_scalar = 1.0, Vz_scalar = 1.0;
+            const double linearAlpha = 0.15;  // Smoothing factor
+            // Reverse Vx's sign.
+            Vx = -Vx;
+            // Convert all velocities to cm/s.
+            Vx *= 100.0;
+            Vy *= 100.0;
+            Vz *= 100.0;
+            // Apply exponential filtering.
+            filteredVx = (1 - linearAlpha) * filteredVx + linearAlpha * Vx;
+            filteredVy = (1 - linearAlpha) * filteredVy + linearAlpha * Vy;
+            filteredVz = (1 - linearAlpha) * filteredVz + linearAlpha * Vz;
+            Vx = filteredVx * Vx_scalar;
+            Vy = filteredVy * Vy_scalar;
+            Vz = filteredVz * Vz_scalar;
         }
 
-        // --- Create Overlay Image ---
+        // --- Visualization ---
         cv::Mat overlay = depthColor.clone();
-        // Draw predicted (blue) arrows.
+        // Draw predicted rotational flow (blue arrows).
         for (int y = 0; y < flow.rows; y += step) {
             for (int x = 0; x < flow.cols; x += step) {
                 cv::Point pt1(x * 2, y * 2);
@@ -583,7 +609,7 @@ int main(int argc, char** argv)
                 cv::arrowedLine(overlay, pt1, pt2, cv::Scalar(255, 0, 0), 3);
             }
         }
-        // Draw measured (green) optical flow arrows.
+        // Draw measured optical flow (green arrows).
         for (int y = 0; y < flow.rows; y += step) {
             for (int x = 0; x < flow.cols; x += step) {
                 cv::Point pt1(x * 2, y * 2);
@@ -594,11 +620,11 @@ int main(int argc, char** argv)
             }
         }
 
-        // --- Overlay Velocity Text (Vx, Vy, Vz) ---
+        // Overlay computed linear velocities (in cm/s).
         std::ostringstream ossVx, ossVy, ossVz;
-        ossVx << "Vx: " << std::fixed << std::setprecision(2) << std::showpos << Vx << " m/s";
-        ossVy << "Vy: " << std::fixed << std::setprecision(2) << std::showpos << Vy << " m/s";
-        ossVz << "Vz: " << std::fixed << std::setprecision(2) << std::showpos << Vz << " m/s";
+        ossVx << "Vx: " << std::fixed << std::setprecision(0) << std::showpos << Vx << " cm/s";
+        ossVy << "Vy: " << std::fixed << std::setprecision(0) << std::showpos << Vy << " cm/s";
+        ossVz << "Vz: " << std::fixed << std::setprecision(0) << std::showpos << Vz << " cm/s";
         int baseX = 10, baseY = 80;
         double speedFontScale = 0.4;
         int speedThickness = 1, speedOutlineThickness = 2;
@@ -634,6 +660,8 @@ int main(int argc, char** argv)
     std::cout << "[Main] Done.\n";
     return 0;
 }
+
+
 
 
 
