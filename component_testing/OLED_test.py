@@ -1,4 +1,4 @@
-from smbus2 import SMBus, i2c_msg
+from smbus2 import SMBus
 from PIL import Image, ImageDraw, ImageFont
 import time
 
@@ -25,73 +25,76 @@ INIT_COMMANDS = [
     0xA1,  # Segment re-map
     0xA6,  # Normal display
     0xA8,  # Set multiplex ratio
-    0x1F,  # 1/32 duty (adjusted for 32-pixel height)
+    0x1F,  # 1/32 duty (for 32-pixel height)
     0xA4,  # Output follows RAM content
     0xD3,  # Display offset
     0x00,  # No offset
     0xD5,  # Set display clock divide ratio/oscillator frequency
     0xF0,  # Max frequency
     0xD9,  # Set pre-charge period
-    0x22,  
+    0x22,
     0xDA,  # Set com pins hardware configuration
     0x02,  # Adjusted for 32-pixel height
     0xDB,  # Set vcomh
     0x20,  # 0.77xVcc
     0x8D,  # Enable charge pump regulator
-    0x14,  
+    0x14,
     0xAF   # Display ON
 ]
 
-# Function to send commands to OLED
 def initialize_oled(bus):
     for cmd in INIT_COMMANDS:
         bus.write_byte_data(DEVICE_ADDRESS, 0x00, cmd)  # Command mode
-        time.sleep(0.01)  # Small delay for each command
+        time.sleep(0.01)
 
-# Create buffer and draw object
+# Create image buffer and drawing object
 image = Image.new("1", (WIDTH, HEIGHT))
 draw = ImageDraw.Draw(image)
-font = ImageFont.load_default()  # You can replace this with a custom font if desired
 
-# Function to display the buffer on the OLED
-def display_image(bus, image):
-    # Convert the image to binary format (1-bit color)
+# Load a slightly smaller TrueType font (size 20)
+try:
+    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+except IOError:
+    print("Custom font not found, falling back to default font.")
+    font = ImageFont.load_default()
+
+def display_text(bus, text):
+    # Clear the screen
+    draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
+    
+    # Compute the bounding box for the text.
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    
+    # Center the text using the bounding box offsets.
+    x = (WIDTH - text_width) // 2 - bbox[0]
+    y = (HEIGHT - text_height) // 2 - bbox[1]
+    
+    draw.text((x, y), text, font=font, fill=255)
+    
+    # Convert image to binary data and send it to the OLED.
     pixel_data = list(image.getdata())
-    # Loop through the 4 pages (32 pixels high / 8 pixels per page = 4 pages)
-    for page in range(HEIGHT // 8):  # Adjust for 32-pixel height
+    for page in range(HEIGHT // 8):
         bus.write_byte_data(DEVICE_ADDRESS, 0x00, 0xB0 + page)  # Set page address
-        bus.write_byte_data(DEVICE_ADDRESS, 0x00, 0x00)  # Set lower column address
-        bus.write_byte_data(DEVICE_ADDRESS, 0x00, 0x10)  # Set higher column address
-        for x in range(WIDTH):
-            # Construct the byte for the 8-pixel vertical column
+        bus.write_byte_data(DEVICE_ADDRESS, 0x00, 0x00)           # Set lower column address
+        bus.write_byte_data(DEVICE_ADDRESS, 0x00, 0x10)           # Set higher column address
+        for col in range(WIDTH):
             byte = 0x00
             for bit in range(8):
-                # Calculate the pixel position in the data array
-                pixel = pixel_data[x + WIDTH * (page * 8 + bit)]
+                pixel = pixel_data[col + WIDTH * (page * 8 + bit)]
                 byte |= (pixel & 0x01) << bit
             bus.write_byte_data(DEVICE_ADDRESS, 0x40, byte)
 
-# Function to draw text and shapes
-def draw_text_and_shapes():
-    draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)  # Clear screen
-    
-    draw.line((0, 0, WIDTH, HEIGHT), fill=255)
-    draw.line((0, HEIGHT, WIDTH, 0), fill=255)
-    draw.rectangle((20, 8, 40, 22), outline=255, fill=0)
-    draw.ellipse((70, 8, 90, 22), outline=255, fill=0)
-    draw.text((30, 22), "Hello, World!", font=font, fill=255)
-
-# Main program
 try:
     with SMBus(PI_BUS) as bus:
         print("Initializing OLED...")
         initialize_oled(bus)
         
-        # Draw and display text and shapes
-        draw_text_and_shapes()
-        display_image(bus, image)
-        
+        # Display "Raspanion" with the slightly smaller font.
+        display_text(bus, "Raspanion")
         print("Display updated. Check your OLED screen.")
 
 except Exception as e:
     print(f"Error: {e}")
+
